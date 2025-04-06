@@ -1,0 +1,5 @@
+{
+    "num_nodes": 3,
+    "election_timeout": [150, 300],
+    "heartbeat_interval": 50
+}
