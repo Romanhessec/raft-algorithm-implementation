@@ -77,6 +77,7 @@ class RaftNode:
 			if message['term'] < self.current_term:
 				return
 
+			# even if it was a candidate, it steps down because it received a valid heartbeat
 			self.state = 'follower'
 			self.current_term = message['term']
 			self.voted_for = None
@@ -104,8 +105,12 @@ class RaftNode:
 			else:
 				index = prev_index + 1
 				for entry in entries:
-					if len(self.log) > index:
-						self.log[index] = entry
+					if index < len(self.log):
+						if self.log[index]['term'] != entry['term']:
+							# conflict found — delete everything from here
+							self.log = self.log[:index] # truncate conflicting entries
+							self.log.append(entry)
+						# else: entry already matches — do nothing
 					else:
 						self.log.append(entry)
 					index += 1
@@ -137,8 +142,10 @@ class RaftNode:
 			else:
 				self.next_index[peer] = max(0, self.next_index.get(peer, 1) - 1)
 
+			# check if any entries are now committed
 			for i in range(len(self.log) - 1, self.commit_index, -1):
 				replicated = sum(1 for idx in self.match_index.values() if idx >= i)
+				# count the leader itself (replicated + 1)
 				if replicated + 1 > len(self.peers) // 2 and self.log[i]['term'] == self.current_term:
 					self.commit_index = i
 					print(f"[REPLICATION] Leader {self.node_id} committed log index {self.commit_index}")
