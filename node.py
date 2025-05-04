@@ -159,6 +159,11 @@ class RaftNode:
 		while True:
 			now = time.time()
 
+			# Simulate random crash (10% chance every second)
+			if random.random() < 0.01:
+				print(f"[FAIL] Node {self.node_id} is crashing...")
+				break  # exit the run loop = simulated crash
+
 			if self.state == 'follower' and (now - self.start_time) >= self.election_timeout:
 				self.state = 'candidate'
 				self.current_term += 1
