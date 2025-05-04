@@ -1,5 +1,7 @@
 import time
 import random
+import logging
+import os
 from multiprocessing import Queue
 
 class RaftNode:
@@ -22,6 +24,16 @@ class RaftNode:
 
 		self.election_timeout = random.uniform(1.5, 3.0)  # seconds
 		self.start_time = time.time()
+
+		log_dir = os.path.join(os.getcwd(), 'logs')
+		os.makedirs(log_dir, exist_ok=True)
+
+		self.logger = logging.getLogger(f"Node{self.node_id}")
+		self.logger.setLevel(logging.INFO)
+		handler = logging.FileHandler(os.path.join(log_dir, f"node{self.node_id}_state.log"), mode='w')
+		formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
+		handler.setFormatter(formatter)
+		self.logger.addHandler(handler)
 
 	def send_message(self, target_id, message):
 		self.message_queues[target_id].put(message)
@@ -198,4 +210,6 @@ class RaftNode:
 			except:
 				pass
 
-			# Note: time.sleep() is not necessary here anymore because of blocking get().
+			if int(time.time()) % 5 == 0:  # once every 5 seconds
+				self.logger.info(f"State: {self.state}, Term: {self.current_term}, Log Length: {len(self.log)}, Commit Index: {self.commit_index}")
+
