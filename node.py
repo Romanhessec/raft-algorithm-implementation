@@ -60,18 +60,49 @@ class RaftNode:
 
 	def handle_message(self, message):
 		if message['type'] == 'RequestVote':
-			if (message['term'] >= self.current_term and
-			 (self.voted_for is None or self.voted_for == message['candidate_id'])):
-				self.voted_for = message['candidate_id']
-				self.current_term = message['term']
-				response = {
-					'type': 'Vote',
-					'term': self.current_term,
-					'vote_granted': True,
-					'to': message['candidate_id'],
-					'from': self.node_id
-				}
-				self.send_message(message['candidate_id'], response)
+			candidate_term = message['term']
+			candidate_id = message['candidate_id']
+			candidate_last_log_index = message.get('last_log_index', -1)
+			candidate_last_log_term = message.get('last_log_term', -1)
+
+			self_last_log_index = len(self.log) - 1
+			self_last_log_term = self.log[self_last_log_index]['term'] if self_last_log_index >= 0 else -1
+
+			self.logger.info(f"[VOTE REQUEST] From Node {candidate_id}, Term {candidate_term}, "
+							f"LastLogIndex {candidate_last_log_index}, LastLogTerm {candidate_last_log_term}")
+			self.logger.info(f"[SELF STATE] Term {self.current_term}, LastLogIndex {self_last_log_index}, "
+							f"LastLogTerm {self_last_log_term}, VotedFor {self.voted_for}")
+
+			vote_granted = False
+
+			if candidate_term > self.current_term:
+				self.voted_for = candidate_id
+				self.current_term = candidate_term
+				vote_granted = True
+				self.logger.info("[VOTE DECISION] Higher term, granting vote.")
+			elif candidate_term == self.current_term:
+				log_up_to_date = (
+					candidate_last_log_term > self_last_log_term or
+					(candidate_last_log_term == self_last_log_term and candidate_last_log_index >= self_last_log_index)
+				)
+				if (self.voted_for is None or self.voted_for == candidate_id) and log_up_to_date:
+					self.voted_for = candidate_id
+					vote_granted = True
+					self.logger.info("[VOTE DECISION] Equal term, log up-to-date, granting vote.")
+				else:
+					self.logger.info("[VOTE DECISION] Log not up-to-date or already voted, denying vote.")
+			else:
+				exit(1)
+				self.logger.info("[VOTE DECISION] Term too old, denying vote.")
+
+			response = {
+				'type': 'Vote',
+				'term': self.current_term,
+				'vote_granted': vote_granted,
+				'to': candidate_id,
+				'from': self.node_id
+			}
+			self.send_message(candidate_id, response)
 
 		elif message['type'] == 'Vote':
 			if self.state == 'candidate' and message['vote_granted']:
@@ -186,7 +217,9 @@ class RaftNode:
 				self.broadcast_message({
 					'type': 'RequestVote',
 					'term': self.current_term,
-					'candidate_id': self.node_id
+					'candidate_id': self.node_id,
+					'last_log_index': len(self.log) - 1,
+					'last_log_term': self.log[-1]['term'] if self.log else -1
 				})
 
 			elif self.state == 'leader' and (now - last_heartbeat) >= heartbeat_interval:
