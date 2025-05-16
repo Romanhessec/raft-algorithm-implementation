@@ -5,10 +5,11 @@ import os
 from multiprocessing import Queue
 
 class RaftNode:
-	def __init__(self, node_id, peers, message_queues):
+	def __init__(self, node_id, peers, message_queues, client_queue):
 		self.node_id = node_id
 		self.peers = peers
 		self.message_queues = message_queues
+		self.client_queue = client_queue
 
 		self.state = 'follower'
 		self.current_term = 0
@@ -194,6 +195,18 @@ class RaftNode:
 					print(f"[REPLICATION] Leader {self.node_id} committed log index {self.commit_index}")
 					break
 
+		elif message['type'] == 'client_command':
+			if self.state == 'leader':
+				command = message['command']
+				self.log.append({'term': self.current_term, 'command': command})
+				self.logger.info(f"[CLIENT] Received command: {command}")
+				print(f"[CLIENT] Leader {self.node_id} received client command: {command}")
+				for peer in self.peers:
+					self.send_append_entries(peer)
+			else:
+				# forward to known leader (basic — assumes most recent AppendEntries sender is leader)
+				self.logger.info(f"[CLIENT] Not leader, ignoring client command.")
+
 	def run(self):
 		print(f"[BOOT] Node {self.node_id} started as {self.state}. Peers: {self.peers}")
 		heartbeat_interval = 0.5
@@ -240,6 +253,12 @@ class RaftNode:
 			try:
 				message = self.message_queues[self.node_id].get(timeout=0.1)
 				self.handle_message(message)
+			except:
+				pass
+
+			try:
+				client_message = self.client_queue.get_nowait()
+				self.handle_message(client_message)
 			except:
 				pass
 
