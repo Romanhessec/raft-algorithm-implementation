@@ -3,6 +3,8 @@ import random
 import logging
 import os
 from multiprocessing import Queue
+import csv
+import json
 
 class RaftNode:
 	def __init__(self, node_id, peers, message_queues, client_queue):
@@ -10,6 +12,9 @@ class RaftNode:
 		self.peers = peers
 		self.message_queues = message_queues
 		self.client_queue = client_queue
+
+		self.recovery_start = time.time()
+		self.catchup_logged = False # flag to avoid logging to early
 
 		self.state = 'follower'
 		self.current_term = 0
@@ -35,6 +40,23 @@ class RaftNode:
 		formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
 		handler.setFormatter(formatter)
 		self.logger.addHandler(handler)
+
+		# benchmarking metrics
+		self.metrics_file = os.path.join(log_dir, f"node{self.node_id}_metrics.csv")
+		if not os.path.exists(self.metrics_file):
+			with open(self.metrics_file, mode='w', newline='') as f:
+				writer = csv.writer(f)
+				writer.writerow(["metric", "event", "timestamp", "details"])  # write header only once
+
+	def log_metric(self, metric_type, event, details=""):
+		timestamp = time.time()
+		with open(self.metrics_file, mode='a', newline='') as f:
+			writer = csv.writer(f)
+			writer.writerow([metric_type, event, timestamp, details])
+			f.flush()
+			os.fsync(f.fileno())  # ensure write to disk
+		self.logger.info(f"[METRIC] {metric_type} {event} {timestamp} {details}")
+
 
 	def send_message(self, target_id, message):
 		self.message_queues[target_id].put(message)
@@ -111,6 +133,7 @@ class RaftNode:
 				if self.votes_received > len(self.peers) // 2:
 					self.state = 'leader'
 					print(f"[ELECTION] Node {self.node_id} became leader for term {self.current_term}")
+					self.log_metric("election", "won", f"term={self.current_term}")
 
 					# Initialize leader state
 					for peer in self.peers:
@@ -161,6 +184,13 @@ class RaftNode:
 
 				if message['leader_commit'] > self.commit_index:
 					self.commit_index = min(message['leader_commit'], len(self.log) - 1)
+
+				# log replication delay for benchmarking
+				for idx in range(self.last_applied + 1, self.commit_index + 1):
+					entry = self.log[idx]
+					if 'timestamp' in entry:
+						delay = time.time() - entry['timestamp']
+						self.log_metric("replication", "follower_commit", f"idx={idx} delay={delay:.4f}")
 
 				response = {
 					'type': 'AppendEntriesResponse',
@@ -227,6 +257,7 @@ class RaftNode:
 				self.votes_received = 1
 				self.start_time = now
 				print(f"[ELECTION] Node {self.node_id} became candidate in term {self.current_term}")
+				self.log_metric("election", "start", f"term={self.current_term}")
 				self.broadcast_message({
 					'type': 'RequestVote',
 					'term': self.current_term,
@@ -237,7 +268,9 @@ class RaftNode:
 
 			elif self.state == 'leader' and (now - last_heartbeat) >= heartbeat_interval:
 				command = f"cmd@{now:.2f}"
-				self.log.append({'term': self.current_term, 'command': command})
+				timestamp = time.time()
+				self.log.append({'term': self.current_term, 'command': command, 'timestamp': timestamp})
+				self.log_metric("replication", "leader_append", f"{command} {timestamp}")
 				print(f"[LEADER] Node {self.node_id} appended command: {command}")
 
 				for peer in self.peers:
@@ -262,6 +295,17 @@ class RaftNode:
 			except:
 				pass
 
+			# recovery time logging
+			if self.state == 'follower' and not self.catchup_logged:
+				if self.commit_index >= len(self.log) - 1:
+					delay = time.time() - self.recovery_start
+					self.log_metric("recovery", "caught_up", f"delay={delay:.4f}")
+					self.catchup_logged = True
+
 			if int(time.time()) % 5 == 0:  # once every 5 seconds
 				self.logger.info(f"State: {self.state}, Term: {self.current_term}, Log Length: {len(self.log)}, Commit Index: {self.commit_index}")
 
+			if int(time.time()) % 10 == 0:
+				with open(f'logs/node{self.node_id}_log.json', 'w') as f:
+					json.dump(self.log, f)
+			
