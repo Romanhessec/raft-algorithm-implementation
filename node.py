@@ -7,11 +7,12 @@ import csv
 import json
 
 class RaftNode:
-	def __init__(self, node_id, peers, message_queues, client_queue):
+	def __init__(self, node_id, peers, message_queues, client_queue, blocked_peers):
 		self.node_id = node_id
 		self.peers = peers
 		self.message_queues = message_queues
 		self.client_queue = client_queue
+		self.blocked_peers = blocked_peers # network partitioning
 
 		self.recovery_start = time.time()
 		self.catchup_logged = False # flag to avoid logging to early
@@ -59,6 +60,9 @@ class RaftNode:
 
 
 	def send_message(self, target_id, message):
+		if (self.node_id, target_id) in self.blocked_peers:
+			self.logger.info(f"[PARTITION] Blocking message from {self.node_id} to {target_id}")
+			return
 		self.message_queues[target_id].put(message)
 
 	def broadcast_message(self, message):
